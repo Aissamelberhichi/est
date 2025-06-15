@@ -1,0 +1,178 @@
+version: '3.9'
+
+services:
+  # Service MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: minio-server
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - ent-network
+    restart: unless-stopped
+
+  # Service Upload (FastAPI)
+  upload-service:
+    build: ./upload-service
+    ports:
+      - "5001:5001"
+    environment:
+      - MINIO_URL=http://minio-server:9000
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=estdb
+      - CASSANDRA_USER=cassandra
+      - CASSANDRA_PASSWORD=cassandra
+      - KEYCLOAK_URL=http://keycloak:8080/
+    networks:
+      - ent-network
+    depends_on:
+      - minio
+      - cassandra
+      - keycloak
+
+  # Service Download (FastAPI)
+  download-service:
+    build: ./download-service
+    ports:
+      - "5002:5002"
+    environment:
+      - MINIO_URL=http://minio-server:9000
+      - KEYCLOAK_URL=http://keycloak:8080/
+    networks:
+      - ent-network
+    depends_on:
+      - minio
+      - keycloak
+
+  # Frontend (React)
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - ent-network
+    depends_on:
+      - upload-service
+      - download-service
+      - user-service
+      - course-service
+      - keycloak
+
+  # Service Cassandra
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=ent-cluster
+      - CASSANDRA_NUM_TOKENS=256
+      - CASSANDRA_START_RPC=true
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - ent-network
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(nodetool statusgossip) = running ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+  # keycloak
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.1
+    container_name: keycloak
+    command: start-dev --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: "/"
+    ports:
+      - "8080:8080"
+    networks:
+      - ent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 180s
+
+  # User Management Service
+  user-service:
+    build: ./user-service
+    ports:
+      - "5003:5003"
+    environment:
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=estdb
+      - CASSANDRA_USER=cassandra
+      - CASSANDRA_PASSWORD=cassandra
+      - KEYCLOAK_URL=http://keycloak:8080/
+    networks:
+      - ent-network
+    restart: on-failure
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
+  # Course Management Service
+  course-service:
+    build: ./course-service
+    ports:
+      - "5004:5004"
+    environment:
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=estdb
+      - CASSANDRA_USER=cassandra
+      - CASSANDRA_PASSWORD=cassandra
+      - MINIO_URL=http://minio-server:9000
+      - UPLOAD_SERVICE_URL=http://upload-service:5001/api
+      - DOWNLOAD_SERVICE_URL=http://download-service:5002/api
+      - USER_SERVICE_URL=http://user-service:5003/api
+      - KEYCLOAK_URL=http://keycloak:8080/
+    networks:
+      - ent-network
+    restart: on-failure
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      upload-service:
+        condition: service_started
+      download-service:
+        condition: service_started
+
+  # Cassandra Initialization Service
+  cassandra-init:
+    build:
+      context: .
+      dockerfile: ./cassandra-init/Dockerfile
+    networks:
+      - ent-network
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
+networks:
+  ent-network:
+    driver: bridge
+
+volumes:
+  minio-data:
+  cassandra_data:
+

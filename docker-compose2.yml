@@ -1,0 +1,75 @@
+version: '3'
+
+services:
+  # Service d'upload
+  upload-service:
+    build: ./upload-service
+    container_name: minio-upload-service
+    ports:
+      - "5001:5001"
+    environment:
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - FLASK_PORT=5001
+    depends_on:
+      - minio
+    networks:
+      - minio-network
+
+  # Service de téléchargement
+  download-service:
+    build: ./download-service
+    container_name: minio-download-service
+    ports:
+      - "5002:5002"
+    environment:
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - FLASK_PORT=5002
+    depends_on:
+      - minio
+    networks:
+      - minio-network
+
+  # Frontend React
+  frontend:
+    build: ./frontend
+    container_name: minio-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_UPLOAD_API_URL=http://localhost:5001/api
+      - REACT_APP_DOWNLOAD_API_URL=http://localhost:5002/api
+    depends_on:
+      - upload-service
+      - download-service
+    networks:
+      - minio-network
+
+  # MinIO (si vous voulez l'inclure dans la composition, sinon utilisez celui déjà en cours d'exécution)
+  # Notez: Si vous avez déjà un conteneur MinIO en cours d'exécution, vous pouvez commenter cette section
+  minio:
+    image: minio/minio
+    container_name: minio-server
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - minio-network
+
+networks:
+  minio-network:
+    driver: bridge
+
+volumes:
+  minio-data:
